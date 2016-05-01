@@ -1,0 +1,208 @@
+\setupbodyfont[antykwa-poltawskiego]
+
+\starttext
+
+\startluacode
+
+    local root = xml.load("bachotex.osm")
+
+    local coordinates = { }
+
+    local b = xml.first(root,"/osm/bounds")
+
+    local minlat = b.at.minlat
+    local minlon = b.at.minlon
+    local maxlat = b.at.maxlat
+    local maxlon = b.at.maxlon
+    local midlat = 0.5 * (minlat + maxlat)
+
+    local deg_to_rad = math.pi / 180.0
+
+    -- vertical scale: 1" = 1cm
+    local scale = 3600
+
+    local function f_pair(lon, lat)
+        return string.formatters("(%.2fcm,%.2fcm)", (lon - minlon) * scale * math.cos(midlat * deg_to_rad), (lat-minlat) * scale)
+    end
+    -- this only works for positive numbers
+    local function f_degree_to_str(num)
+        local deg = math.floor(num)
+        num = (num - deg) * 60
+        local min = math.floor(num)
+        num = (num - min) * 60
+        local sec = num
+        return string.formatters("%d°%d’%.0f”", deg, min, sec)
+    end
+
+    for c in xml.collected(root,"/osm/node") do
+        local a = c.at
+        coordinates[a.id] = a
+    end
+
+    local f_pattern = string.formatters["/osm/(way|relation)[@visible='true']/tag[@k='%s']"]
+    local f_draw    = string.formatters["draw %--t withcolor %s withpen pencircle scaled 1;"]
+    local f_fill    = string.formatters["fill %--t -- cycle withcolor %s withpen pencircle scaled 1;"]
+    local f_draw_p  = string.formatters["path p ; p := %--t ; draw p withcolor %s withpen pencircle scaled 1;"]
+    local f_fill_p  = string.formatters["path p ; p := %--t -- cycle ; fill p withcolor %s withpen pencircle scaled 1;"]
+    local f_bounds  = string.formatters["setbounds currentpicture to %--t -- cycle ; addbackground withcolor %s ;"]
+    local f_way     = string.formatters["/osm/way[@id='%s']"]
+    local f_textext = string.formatters['draw (textext("\\bf %s") scaled 0.35) shifted center p withcolor white;']
+
+    local f_draw_p_dashed = string.formatters["path p ; p := %--t ; draw p withcolor %s dashed %s withpen pencircle scaled %g;"]
+    local f_label_urt     = string.formatters['label.urt((textext("%s") scaled 0.35), llcorner p) withcolor white;']
+
+    -- we can use transparencies to add up
+
+    local colors = {
+        restaurant        = "white",
+        parking           = ".25white",
+        university        = ".2white", -- MC, background
+        beach             = ".1white", -- MC
+        water             = "black",   -- MC
+--
+        path              = ".4white", -- MC
+        track             = ".4white", -- MC
+        footway           = ".3white", -- MC
+        service           = ".4white", -- MC
+        steps             = ".3white", -- MC, steps
+--
+        hut               = "white",   -- MC
+        yes               = "white",   -- MC
+        public            = "white",   -- MC
+        fence             = ".5white",   -- MC
+        pitch             = ".3white",
+        playground        = ".3white",
+        pier              = ".3white",
+        reservoir_covered = ".2white", -- MC
+        background        = ".3white", -- MC, grass
+--
+        grid              = "white",
+    }
+
+    local rendering = {
+        natural  = true,
+        highway  = false,
+        building = true,
+        barrier  = false,
+        leisure  = true,
+        amenity  = true,
+        landuse  = false,
+        man_made = false,
+    }
+
+    local shown = {
+        "amenity",
+        "natural",
+        "highway",
+        "building",
+        "barrier",
+        "leisure",
+        "man_made",
+    }
+
+
+    local function drawshapes(what)
+        local function filterpath(r,pattern,name,kind)
+            local p = { }
+            for c in xml.collected(r,pattern) do
+                local coordinate = coordinates[c.at.ref]
+                if coordinate then
+                    p[#p+1] = f_pair(coordinate.lon, coordinate.lat)
+                end
+            end
+            local color = colors[kind] or "black"
+            if #p == 0 then
+                -- error
+            elseif name then
+                if rendering[what] then
+                    context(f_fill_p(p,color))
+                else
+                    context(f_draw_p(p,color))
+                end
+                context(f_textext(name))
+            else
+                if rendering[what] then
+                    context(f_fill(p,color))
+                else
+                    context(f_draw(p,color))
+                end
+            end
+        end
+
+         -- we're in tex so filters print to tex (maybe make that an option some day) which is why we need the xml://
+
+        for c in xml.collected(root,f_pattern(what)) do
+            local parent = xml.parent(c)
+            local tag    = parent.tg
+            local name   = xml.filter(parent,"xml://tag[@k='addr:housenumber']/attribute('v')")
+            local kind   = xml.filter(parent,"xml://tag[@k='amenity']/attribute('v')") or c.at.v
+            if tag == "way" then
+                filterpath(parent,"/nd",name,kind)
+            elseif tag == "relation" then
+                for m in xml.collected(parent,"/member[@type='way']") do
+                    local f = xml.first(root,f_way(m.at.ref))
+                    if f then
+                        filterpath(f,"/nd",name,kind)
+                    end
+                end
+            end
+        end
+    end
+
+    local function draw_grid()
+        local lat0 = math.ceil (3600*minlat)
+        local lat1 = math.floor(3600*maxlat)
+        local lat
+        for i=lat0,lat1,1 do
+            lat=i/3600
+            local p = {
+                f_pair(minlon,lat),
+                f_pair(maxlon,lat),
+            }
+            context(f_draw_p_dashed(p,colors.grid, "withdots", 0.4))
+            context(f_label_urt(f_degree_to_str(lat)))
+        end
+
+        local lon0 = math.ceil (1800*minlon)*2
+        local lon1 = math.floor(1800*maxlon)*2
+        local lon
+        for i=lon0,lon1,2 do
+            lon=i/3600
+            local p = {
+                f_pair(lon, minlat),
+                f_pair(lon, maxlat),
+            }
+            context(f_draw_p_dashed(p,colors.grid, "withdots", 0.4))
+            context(f_label_urt(f_degree_to_str(lon)))
+        end
+    end
+
+    local function drawboundary()
+        local p = {
+            f_pair(minlon,minlat),
+            f_pair(maxlon,minlat),
+            f_pair(maxlon,maxlat),
+            f_pair(minlon,maxlat),
+        }
+        context(f_bounds(p,colors.background))
+    end
+
+    context.startTEXpage()
+    context.startMPcode("doublefun")
+
+    for i=1,#shown do
+        drawshapes(shown[i])
+    end
+
+    --draw_grid()
+
+    drawboundary()
+
+    context.stopMPcode()
+    context.stopTEXpage()
+
+\stopluacode
+
+% height: math.sin((53.2908400-53.2870100)*3.14/180)*6400000 = 427.60 m
+% width: 303.57
+\stoptext
